@@ -81,10 +81,11 @@ class TrainerBase(L.LightningModule):
         elif self.config.algo.backbone == 'hf_dit':
             self.backbone = transformers.AutoModelForMaskedLM.from_pretrained(
                 config.eval.checkpoint_path, trust_remote_code=True)
+        # todo conditional backbone
         elif self.config.algo.backbone == 'bert':
             # self.backbone = transformers.AutoModelForMaskedLM.from_pretrained(
             #     config.eval.checkpoint_path, trust_remote_code=True)
-            # todo fine tune model to use sigma (e.g. for LayerNorm adaptaion based on sigma, as done in DiT adaLN)
+            # todo fine tune model to use sigma (e.g. for LayerNorm adaptation based on sigma, as done in DiT adaLN)
             backbone = transformers.AutoModelForMaskedLM.from_pretrained(
                 pretrained_model_name_or_path='answerdotai/ModernBERT-base', attn_implementation='flash_attention_2',torch_dtype=torch.float16)
 
