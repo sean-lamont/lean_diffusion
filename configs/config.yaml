@@ -78,6 +78,7 @@ trainer:
 wandb:
   project: flow-ode
   notes: Flow ODEs for UDLM
+  offline: true
   group: null
   job_type: null
   name: null

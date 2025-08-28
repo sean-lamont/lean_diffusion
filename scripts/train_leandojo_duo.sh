@@ -3,8 +3,7 @@
 # `checkpointing.save_dir` explicitly.
 
 python -u -m main \
-  loader.batch_size=4 \
-  loader.eval_batch_size=4 \
+  loader.global_batch_size=4 \
   data=leandojo \
   wandb.name=duo-lm1b \
   model=small \

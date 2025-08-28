@@ -1,7 +1,7 @@
 train: leandojo
 valid: leandojo
 tokenizer_name_or_path: answerdotai/ModernBERT-base #kaiyuy/leandojo-lean4-tacgen-byt5-small #bert-base-uncased ##kaiyuy/leandojo-lean4-retriever-byt5-small #
-cache_dir: data_cache #null #/share/kuleshov/ssahoo/textdiffusion/data
+cache_dir: /home/sean/lean_diffusion/data_cache #null #/share/kuleshov/ssahoo/textdiffusion/data
 wrap: False
 streaming: False
 insert_train_eos: True

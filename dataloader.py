@@ -444,7 +444,7 @@ def get_dataset(dataset_name,
 
     if dataset_name == 'leandojo':
         dataset = datasets.load_from_disk(
-            '/home/sean/Documents/diffusion/duo/leandojo_hf', )
+            '/home/sean/lean_diffusion/leandojo_hf', )
         # cache_dir=cache_dir,
         # streaming=streaming,
         # revision=revision)
@@ -567,6 +567,8 @@ def get_dataset(dataset_name,
 
     EOS = tokenizer.encode(tokenizer.eos_token)[0]
     BOS = tokenizer.encode(tokenizer.bos_token)[0]
+    PAD = tokenizer.encode(tokenizer.pad_token)[0]
+
 
     def preprocess_and_tokenize(example):
         if dataset_name == 'leandojo':
@@ -584,23 +586,30 @@ def get_dataset(dataset_name,
 
 
             goal_tokens = tokenizer(goal_text,
-                               max_length=block_size,
-                               padding=None,
-                               truncation=True,
                                add_special_tokens=False,
                                return_attention_mask=False,
                                return_token_type_ids=False)
 
             proof_tokens = tokenizer(proof_text,
-                               max_length=block_size,
-                               padding=None,
-                               truncation=True,
                                add_special_tokens=False,
                                return_attention_mask=False,
                                return_token_type_ids=False)
 
+
             # cat the tokens, keeping the length recorded
-            tokens = {'input_ids': [BOS] + goal_tokens['input_ids'] + proof_tokens['input_ids'][i] + [EOS], 'condition_cutoff': goal_tokens['input_ids'].shape[-1] + 1}, # add 1 for BOS
+            # tokens = {'input_ids': [[BOS]] + goal_tokens['input_ids'] + proof_tokens['input_ids'] + [[EOS]]}#, 'condition_cutoff': [len(goal_tokens['input_ids']) + 1]} # add 1 for BOS
+            tokens = {'input_ids': [[BOS] + goal_tokens['input_ids'][i] + proof_tokens['input_ids'][i] + [EOS] for i in range(len(goal_tokens['input_ids']))], 'condition_cutoff': [[len(goal_tokens['input_ids'][i]) + 1] for i in range(len(goal_tokens['input_ids']))] } # add 1 for BOS
+
+            # add padding
+            tokens['input_ids'] = [tok + [PAD] * (block_size - len(tok)) if len(tok) < block_size else tok[:block_size-1] + [EOS] for tok in tokens['input_ids']]
+
+            # add attention mask
+            tokens['attention_mask'] = [[1]*len(tok) + [0]*(block_size - len(tok)) if len(tok) < block_size else [1]*(block_size) for tok in tokens['input_ids']]
+
+
+            # sanity check
+            # print (tokens['input_ids'][:10], tokens['condition_cutoff'][:10], tokenizer.batch_decode(tokens['input_ids'][:10]), tokenizer.batch_decode([tok[tokens['condition_cutoff'][i]:] for i, tok in enumerate(tokens['input_ids'][:10])]))
+
 
             return tokens
 

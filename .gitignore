@@ -1,5 +1,6 @@
 .DS_Store
 leandojo_hf/
+data_cache/
 .hf_cache
 test/
 outputs/
