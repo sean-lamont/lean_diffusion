@@ -20,22 +20,20 @@ class CONDITIONAL_DUO(DUO):
     def __init__(self, config, tokenizer):
         super().__init__(config, tokenizer)
 
-    # todo
-    # - modify train/val step to take condition + input, giving to nll
-    # modify nll to split up input into condition and input
-    # - need to pass conditional data to backbone, could just truncate input after that and keep everything else the same?
-    # - need to modify generate samples to take in a condition
-    # pass in full input to backbone, split
+        # todo properly index with condition cutoff
+
 
     def _loss(self, x0, valid_tokens,
+              condition_cutoff,
               current_accumulation_step=None,
               train_mode=False):
 
+        # todo make valid tokens for post condition tokens only
         (input_tokens, output_tokens,
          valid_tokens) = self._process_model_input(
             x0, valid_tokens)
 
-        loss = self.nll(input_tokens, output_tokens,
+        loss = self.nll(input_tokens, output_tokens, condition_cutoff,
                         current_accumulation_step, train_mode)
 
         assert loss.ndim == 2
@@ -52,37 +50,34 @@ class CONDITIONAL_DUO(DUO):
                     prior_loss=0.0,
                     num_tokens=num_tokens)
 
-    # def forward(self, xt, sigma):
-    def forward(self, xt, sigma):
+    def _process_model_output(self, model_output, xt, sigma):
+        del xt, sigma
+        return model_output.log_softmax(dim=-1)
+
+    # returns model output for non-conditional tokens only
+    def forward(self, xt, condition_cutoff, sigma):
 
         sigma = self._process_sigma(sigma)
 
+        # todo give attention mask to backbone??
         with torch.cuda.amp.autocast(dtype=torch.float32):
-            # print (f'Forward pass with xt shape: {xt.shape}, sigma shape: {sigma.shape}')
-
-            ## could also in data prep stage: tokenize condition and input separately, concatenate,
-            # and create attention mask. Keep track of condition length to split up here
-            # can also keep
-            inp = torch.cat([xt, x_cond], dim=-1)
             model_output = self.backbone(xt, sigma)
-            # take indices after condition only
-            model_output = model_output[:, x_cond.shape[1]:, :]
-
+            model_output = model_output[:, condition_cutoff:, :]
 
         # todo split up output to remove condition indices
         return self._process_model_output(
             model_output=model_output, xt=xt, sigma=sigma)
 
-    def _process_model_output(self, model_output, xt, sigma):
-        del xt, sigma
-        return model_output.log_softmax(dim=-1)
+    def super_nll(self, x0, output_tokens, condition_cutoff,
+                  current_accumulation_step=None, train_mode=False):
 
-    def super_nll(self, x0, output_tokens,
-            current_accumulation_step=None, train_mode=False):
         del output_tokens
+
         t = self._sample_t(x0.shape[0],
                            current_accumulation_step)
+
         assert t.shape[0] == x0.shape[0]
+
         if self.T > 0:
             t = (t * self.T).to(torch.int)
             t = t / self.T
@@ -94,38 +89,48 @@ class CONDITIONAL_DUO(DUO):
         assert alpha_t.ndim == 2
         sigma = self._sigma_from_alphat(alpha_t)
 
-        # todo split and combine as in other nll
-        xt = self.q_xt(x0, alpha_t)
-        log_x_theta = self.forward(xt, sigma=sigma)
+        # split condition tokens before noising, and combine again after
+        xt = self.q_xt(x0[:, condition_cutoff:], alpha_t)
+        xt = torch.cat([x0[:, :condition_cutoff], xt], dim=1)
+
+        log_x_theta = self.forward(xt, condition_cutoff, sigma=sigma)
+
         utils.print_nans(log_x_theta, 'model_output')
+
         return self.nll_per_token(
             log_x_theta=log_x_theta,
-            xt=xt,
-            x0=x0,
+            xt=xt[:, condition_cutoff:],
+            x0=x0[:, condition_cutoff:],
             alpha_t=alpha_t,
             dalpha_t=dalpha_t,
             low_var=train_mode and self.loss_type == 'low_var')
 
-
-    def nll(self, x0, output_tokens,
+    def nll(self, x0, output_tokens, condition_cutoff,
             current_accumulation_step=None, train_mode=False):
 
         use_true_nll = (self.global_step > self.curriculum_end
                         or not train_mode)
 
         if use_true_nll:
-            return super_nll(x0, output_tokens,
-                               current_accumulation_step)
+            return super_nll(x0, output_tokens, condition_cutoff,
+                             current_accumulation_step)
         del output_tokens
 
+
         t = self._sample_t(x0.shape[0], current_accumulation_step)
+
         gamma_t = self.gamma_min + t * (self.gamma_max
                                         - self.gamma_min)
+
         gamma_t_prime = self.gamma_max - self.gamma_min
+
         usdm_alpha_t = self._gamma_to_alphat(gamma_t)
+
         T = 1000
+
         usdm_dalpha_t = gamma_t_prime * T * (
                 self._gamma_to_alphat(gamma_t + 1 / T) - usdm_alpha_t)
+
         usdm_alpha_t = usdm_alpha_t.unsqueeze(-1)
         usdm_dalpha_t = usdm_dalpha_t.unsqueeze(-1)
         assert usdm_alpha_t.ndim == 2
@@ -133,17 +138,21 @@ class CONDITIONAL_DUO(DUO):
 
         # todo what to do here for conditional tokens?
         x0_one_hot = F.one_hot(x0, self.vocab_size)
-        # keep full one-hot and split up here, don't want any noise given to conditional tokens
-        # todo split up
-        xt = self._q_xt_gaussian(x0_one_hot, gamma_t)
+
+        # split one-hot here, don't want any noise given to conditional tokens
+        xt = self._q_xt_gaussian(x0_one_hot[:, condition_cutoff:], gamma_t)
         xt = xt * self._compute_gumbel_tau_inverse()
         xt_usdm = xt.argmax(-1)
-        # todo combine again, pass to model with split indices for conditional
-        log_x_theta = self.forward(xt, sigma=sigma)
+
+        # add back conditional tokens to xt
+        xt = torch.cat([x0_one_hot[:, :condition_cutoff], xt], dim=1)
+
+        # expect log_x_theta to be for non-conditional tokens only
+        log_x_theta = self.forward(xt, condition_cutoff, sigma=sigma)
 
         return self.nll_per_token(log_x_theta=log_x_theta,
                                   xt=xt_usdm,
-                                  x0=x0,
+                                  x0=x0[:, condition_cutoff:],
                                   alpha_t=usdm_alpha_t,
                                   dalpha_t=usdm_dalpha_t,
                                   low_var=False)
@@ -154,6 +163,7 @@ class CONDITIONAL_DUO(DUO):
         # todo break input_ids into condition and input
         losses = self._loss(batch['input_ids'],
                             batch['attention_mask'],
+                            batch['condition_cutoff'],
                             current_accumulation_step,
                             train_mode=True)
         self.metrics.update_train(losses.nlls, losses.prior_loss,
@@ -168,7 +178,9 @@ class CONDITIONAL_DUO(DUO):
     def validation_step(self, batch, batch_idx):
         del batch_idx
         losses = self._loss(batch['input_ids'],
-                            batch['attention_mask'])
+                            batch['attention_mask'],
+                            batch['condition_cutoff'],
+                            )
         self.metrics.update_valid(losses.nlls, losses.prior_loss,
                                   losses.num_tokens)
         return losses.loss
@@ -214,8 +226,6 @@ class CONDITIONAL_DUO(DUO):
                              on_step=False,
                              sync_dist=True)
         self._train_mode()
-
-
 
     # todo need conditions here to generate samples for (store random subset of validation conditions in internal variable?)
     @torch.no_grad()
@@ -266,7 +276,6 @@ class CONDITIONAL_DUO(DUO):
             sigma = self._sigma_from_alphat(self.noise(t0)[1])
             x = self.forward(xt=x, sigma=sigma).argmax(dim=-1)
         return x
-
 
     def _ancestral_update(self, x, t, dt, p_x0=None,
                           noise_removal_step=False):
