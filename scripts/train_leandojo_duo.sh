@@ -8,7 +8,7 @@ python -u -m main \
   wandb.name=duo-lm1b \
   model=small \
   algo=duo_bert \
-  model.length=128 \
+  model.length=512 \
   algo.gumbel_tau_log10_start=-3.0 \
   algo.gumbel_tau_log10_end=-3.0 \
   algo.gamma_min=-3.5 \

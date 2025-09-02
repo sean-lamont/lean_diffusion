@@ -87,16 +87,49 @@ class TrainerBase(L.LightningModule):
             #     config.eval.checkpoint_path, trust_remote_code=True)
             # todo fine tune model to use sigma (e.g. for LayerNorm adaptation based on sigma, as done in DiT adaLN)
             backbone = transformers.AutoModelForMaskedLM.from_pretrained(
-                pretrained_model_name_or_path='answerdotai/ModernBERT-base', attn_implementation='flash_attention_2',torch_dtype=torch.float16)
+                pretrained_model_name_or_path='answerdotai/ModernBERT-base', attn_implementation='flash_attention_2',
+                torch_dtype=torch.float16)
 
             class BertBackbone(torch.nn.Module):
                 def __init__(self, backbone):
                     super().__init__()
                     self.backbone = backbone
 
-                def forward(self, input_ids, sigma=None):
-                    return self.backbone(input_ids=input_ids,).logits
+                    # hack to allow modern bert to allow for soft token embeddings, without modifying the original library
 
+                    def new_forward_1(input_ids, inputs_embeds=None):
+                        if inputs_embeds is not None:
+                            raise NotImplementedError
+                        if input_ids.ndim == 1:
+                            return self.backbone.model.embeddings.compiled_embeddings(input_ids)
+                        else:
+                            return torch.nn.functional.softmax(input_ids,
+                                                               dim=-1).float() @ self.backbone.model.embeddings.drop(
+                                self.backbone.model.embeddings.norm(
+                                    self.backbone.model.embeddings.tok_embeddings.weight.float()))
+
+                    def new_forward_2(input_ids, inputs_embeds=None):
+                        if inputs_embeds is not None:
+                            raise NotImplementedError
+                        if input_ids.ndim == 1:
+                            return self.backbone.model.embeddings.drop(
+                                self.backbone.model.embeddings.norm(
+                                    self.backbone.model.embeddings.tok_embeddings(input_ids)))
+                        else:
+                            return torch.nn.functional.softmax(input_ids,
+                                                               dim=-1).float() @ self.backbone.model.embeddings.drop(
+                                self.backbone.model.embeddings.norm(
+                                    self.backbone.model.embeddings.tok_embeddings.weight.float()))
+
+                    cond = self.backbone.model.embeddings.config.reference_compile
+
+                    if cond:
+                        self.backbone.model.embeddings.forward = new_forward_1
+                    else:
+                        self.backbone.model.embeddings.forward = new_forward_2
+
+                def forward(self, input_ids, sigma=None, attention_mask=None):
+                    return self.backbone(input_ids=input_ids, attention_mask=attention_mask).logits
 
             # Use a custom wrapper to avoid passing sigma to the backbone
             self.backbone = BertBackbone(backbone)
@@ -127,7 +160,6 @@ class TrainerBase(L.LightningModule):
         self.neg_infinity = -1000000.0
         self.fast_forward_epochs = None
         self.fast_forward_batches = None
-
 
     def on_after_backward(self) -> None:
         for name, p in self.named_parameters():
@@ -343,7 +375,7 @@ class TrainerBase(L.LightningModule):
                         self.trainer.logger, 'log_table'):
                     # Log the last generated samples
                     text_samples = text_samples[
-                                   : self.config.sampling.num_sample_log]
+                        : self.config.sampling.num_sample_log]
                     self.trainer.logger.log_table(
                         key=f'samples@global_step{self.global_step}',
                         columns=['Generated Samples'],

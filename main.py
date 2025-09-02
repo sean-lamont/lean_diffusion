@@ -9,9 +9,12 @@ import rich.syntax
 import rich.tree
 import torch
 
+import conditional_diffusion
 import algo
 import dataloader
 import utils
+
+torch.set_float32_matmul_precision('high')
 
 omegaconf.OmegaConf.register_new_resolver(
   'cwd', os.getcwd)
@@ -229,6 +232,8 @@ def main(config):
     diffusion_model = algo.SEDDAbsorb
   elif config.algo.name == 'duo':
     diffusion_model = algo.DUO
+  elif config.algo.name == 'conditional_duo':
+      diffusion_model = conditional_diffusion.CONDITIONAL_DUO
   elif config.algo.name == 'distillation':
     diffusion_model = algo.Distillation
   elif config.algo.name == 'ot-finetune':

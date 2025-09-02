@@ -1,40 +1,56 @@
-import os
-import collections
-import copy
-import pickle
-
-import fsspec
-import numpy as np
 import torch
 import torch.nn.functional as F
 
 import trainer_base
+from trainer_base import Loss
 import utils
-import algo
-
+from algo import *
 
 # - trainer_base -> diffusion -> Uniform state diffusion -> Duo base -> Duo -> Conditional Duo
 # _loss -> nll (implemented by duo)
 
+'''
+Conditional DUO model. Inherits from DUO model.
+Conditioning is done by replacing the noised tokens with the original tokens at the condition indices.  
+Cannot simply use an attention mask, as we need to replace the noised tokens with the original tokens before they are seen by the model.
+
+'''
+
+
 class CONDITIONAL_DUO(DUO):
     def __init__(self, config, tokenizer):
         super().__init__(config, tokenizer)
-
-        # todo properly index with condition cutoff
-
 
     def _loss(self, x0, valid_tokens,
               condition_cutoff,
               current_accumulation_step=None,
               train_mode=False):
 
-        # todo make valid tokens for post condition tokens only
         (input_tokens, output_tokens,
          valid_tokens) = self._process_model_input(
             x0, valid_tokens)
 
-        loss = self.nll(input_tokens, output_tokens, condition_cutoff,
+
+        # todo could just pass condition mask and valid tokens from dataloader?
+        # update valid tokens to include 0's at condition indices
+        batch_size, seq_len = x0.shape
+        device = x0.device
+        condition_mask = torch.arange(seq_len, device=device).unsqueeze(0) < condition_cutoff.unsqueeze(1)
+
+        # original duo is assumed to treat invalid tokens (i.e. padding) by default, as no attention mask is given to the model?
+        loss = self.nll(input_tokens, output_tokens, condition_mask, valid_tokens,
                         current_accumulation_step, train_mode)
+
+        # negate condition mask, and join with valid (i.e. valid must be not padding and not condition)
+        # valid_tokens = valid_tokens * (~condition_mask).long()
+
+        # print (f'before: {valid_tokens}')
+
+        valid_tokens = torch.where(condition_mask, torch.tensor(0, dtype=valid_tokens.dtype, device=valid_tokens.device), valid_tokens)
+
+        # print (f'after: {valid_tokens}')
+        # print (torch.sum(valid_tokens, dim=1))
+
 
         assert loss.ndim == 2
         if self.ignore_bos:
@@ -55,20 +71,18 @@ class CONDITIONAL_DUO(DUO):
         return model_output.log_softmax(dim=-1)
 
     # returns model output for non-conditional tokens only
-    def forward(self, xt, condition_cutoff, sigma):
+    def forward(self, xt, sigma, attention_mask=None, ):
 
         sigma = self._process_sigma(sigma)
 
-        # todo give attention mask to backbone??
+        # todo give attention mask to backbone?
         with torch.cuda.amp.autocast(dtype=torch.float32):
-            model_output = self.backbone(xt, sigma)
-            model_output = model_output[:, condition_cutoff:, :]
+            model_output = self.backbone(input_ids=xt, sigma=sigma, attention_mask=attention_mask)
 
-        # todo split up output to remove condition indices
         return self._process_model_output(
             model_output=model_output, xt=xt, sigma=sigma)
 
-    def super_nll(self, x0, output_tokens, condition_cutoff,
+    def super_nll(self, x0, output_tokens, condition_mask, attention_mask,
                   current_accumulation_step=None, train_mode=False):
 
         del output_tokens
@@ -89,33 +103,32 @@ class CONDITIONAL_DUO(DUO):
         assert alpha_t.ndim == 2
         sigma = self._sigma_from_alphat(alpha_t)
 
-        # split condition tokens before noising, and combine again after
-        xt = self.q_xt(x0[:, condition_cutoff:], alpha_t)
-        xt = torch.cat([x0[:, :condition_cutoff], xt], dim=1)
+        xt = self.q_xt(x0, alpha_t)
 
-        log_x_theta = self.forward(xt, condition_cutoff, sigma=sigma)
+        xt = torch.where(condition_mask, x0, xt)
+
+        log_x_theta = self.forward(xt, sigma=sigma, attention_mask=attention_mask)
 
         utils.print_nans(log_x_theta, 'model_output')
 
         return self.nll_per_token(
             log_x_theta=log_x_theta,
-            xt=xt[:, condition_cutoff:],
-            x0=x0[:, condition_cutoff:],
+            xt=xt,
+            x0=x0,
             alpha_t=alpha_t,
             dalpha_t=dalpha_t,
             low_var=train_mode and self.loss_type == 'low_var')
 
-    def nll(self, x0, output_tokens, condition_cutoff,
+    def nll(self, x0, output_tokens, condition_mask, attention_mask,
             current_accumulation_step=None, train_mode=False):
 
         use_true_nll = (self.global_step > self.curriculum_end
                         or not train_mode)
 
         if use_true_nll:
-            return super_nll(x0, output_tokens, condition_cutoff,
-                             current_accumulation_step)
+            return self.super_nll(x0, output_tokens, condition_mask, attention_mask,
+                                  current_accumulation_step)
         del output_tokens
-
 
         t = self._sample_t(x0.shape[0], current_accumulation_step)
 
@@ -136,23 +149,35 @@ class CONDITIONAL_DUO(DUO):
         assert usdm_alpha_t.ndim == 2
         sigma = self._sigma_from_alphat(usdm_alpha_t)
 
-        # todo what to do here for conditional tokens?
         x0_one_hot = F.one_hot(x0, self.vocab_size)
 
-        # split one-hot here, don't want any noise given to conditional tokens
-        xt = self._q_xt_gaussian(x0_one_hot[:, condition_cutoff:], gamma_t)
-        xt = xt * self._compute_gumbel_tau_inverse()
+        xt = self._q_xt_gaussian(x0_one_hot, gamma_t)
+        xt = xt * self._compute_gumbel_tau_inverse() # t -> 0, approaches arg max
         xt_usdm = xt.argmax(-1)
 
-        # add back conditional tokens to xt
-        xt = torch.cat([x0_one_hot[:, :condition_cutoff], xt], dim=1)
+        ## add back conditional tokens to xt
 
-        # expect log_x_theta to be for non-conditional tokens only
-        log_x_theta = self.forward(xt, condition_cutoff, sigma=sigma)
+        xt_usdm = torch.where(condition_mask, x0, xt_usdm)
 
+        # todo is this expensive? better way to do this?
+        one_hot_condition_mask = condition_mask.unsqueeze(-1).expand(-1, -1, xt.shape[-1])
+
+
+        xt = torch.where(one_hot_condition_mask, x0_one_hot, xt)
+
+        # note model has to support forward with different shapes / modes for soft vs hard tokens
+        # given input_embeds as this is the 'curriculum learning' version where we pass in soft tokens (for non-conditional)
+
+
+        # from paper, assumes the model forward step will apply softmax to the soft tokens
+        log_x_theta = self.forward(xt, sigma=sigma, attention_mask=attention_mask, )
+
+        utils.print_nans(log_x_theta, 'model_output')
+
+        # eqn 48 in paper, log_x_theta is x_theta, xt is zt, x0 is x
         return self.nll_per_token(log_x_theta=log_x_theta,
                                   xt=xt_usdm,
-                                  x0=x0[:, condition_cutoff:],
+                                  x0=x0,
                                   alpha_t=usdm_alpha_t,
                                   dalpha_t=usdm_dalpha_t,
                                   low_var=False)

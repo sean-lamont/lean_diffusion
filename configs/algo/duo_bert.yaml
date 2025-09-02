@@ -1,4 +1,5 @@
-name: duo
+name: conditional_duo #duo
+#name: duo
 backbone: bert  # dit / dimamba / hf_dit
 parameterization: mean
 time_conditioning: True

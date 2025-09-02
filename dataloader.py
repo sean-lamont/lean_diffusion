@@ -452,6 +452,7 @@ def get_dataset(dataset_name,
         # dataset = datasets.Dataset.from_file('./leandojo_hf/data-00000-of-00001.arrow')
 
 
+
     elif dataset_name == 'wikitext103':
         dataset = datasets.load_dataset(
             'wikitext',
@@ -569,7 +570,6 @@ def get_dataset(dataset_name,
     BOS = tokenizer.encode(tokenizer.bos_token)[0]
     PAD = tokenizer.encode(tokenizer.pad_token)[0]
 
-
     def preprocess_and_tokenize(example):
         if dataset_name == 'leandojo':
             # text = example['goal']
@@ -584,32 +584,37 @@ def get_dataset(dataset_name,
             tokenizer.padding_side = 'right'
             tokenizer.truncation_side = 'right'
 
-
             goal_tokens = tokenizer(goal_text,
-                               add_special_tokens=False,
-                               return_attention_mask=False,
-                               return_token_type_ids=False)
+                                    add_special_tokens=False,
+                                    return_attention_mask=False,
+                                    return_token_type_ids=False)
 
             proof_tokens = tokenizer(proof_text,
-                               add_special_tokens=False,
-                               return_attention_mask=False,
-                               return_token_type_ids=False)
-
+                                     add_special_tokens=False,
+                                     return_attention_mask=False,
+                                     return_token_type_ids=False)
 
             # cat the tokens, keeping the length recorded
             # tokens = {'input_ids': [[BOS]] + goal_tokens['input_ids'] + proof_tokens['input_ids'] + [[EOS]]}#, 'condition_cutoff': [len(goal_tokens['input_ids']) + 1]} # add 1 for BOS
-            tokens = {'input_ids': [[BOS] + goal_tokens['input_ids'][i] + proof_tokens['input_ids'][i] + [EOS] for i in range(len(goal_tokens['input_ids']))], 'condition_cutoff': [[len(goal_tokens['input_ids'][i]) + 1] for i in range(len(goal_tokens['input_ids']))] } # add 1 for BOS
+            tokens = {'input_ids': [[BOS] + goal_tokens['input_ids'][i] + proof_tokens['input_ids'][i] + [EOS] for i in
+                                    range(len(goal_tokens['input_ids']))],
+                      # if len(goal_tokens['input_ids'][i]) + len(proof_tokens['input_ids'][i]) + 2 <= block_size], # ensure the whole goal fits in the block
 
-            # add padding
-            tokens['input_ids'] = [tok + [PAD] * (block_size - len(tok)) if len(tok) < block_size else tok[:block_size-1] + [EOS] for tok in tokens['input_ids']]
+                      'condition_cutoff': [len(goal_tokens['input_ids'][i]) + 1 for i in
+                                           range(len(goal_tokens['input_ids']))]}  # add 1 for BOS
 
             # add attention mask
-            tokens['attention_mask'] = [[1]*len(tok) + [0]*(block_size - len(tok)) if len(tok) < block_size else [1]*(block_size) for tok in tokens['input_ids']]
+            tokens['attention_mask'] = [
+                [1] * len(tok) + [0] * (block_size - len(tok)) if len(tok) < block_size else [1] * (block_size) for tok
+                in tokens['input_ids']]
 
+            # add padding
+            tokens['input_ids'] = [
+                tok + [PAD] * (block_size - len(tok)) if len(tok) < block_size else tok[:block_size - 1] + [EOS] for tok
+                in tokens['input_ids']]
 
             # sanity check
             # print (tokens['input_ids'][:10], tokens['condition_cutoff'][:10], tokenizer.batch_decode(tokens['input_ids'][:10]), tokenizer.batch_decode([tok[tokens['condition_cutoff'][i]:] for i, tok in enumerate(tokens['input_ids'][:10])]))
-
 
             return tokens
 
@@ -671,6 +676,14 @@ def get_dataset(dataset_name,
     elif dataset_name == 'leandojo':
         tokenized_dataset = tokenized_dataset.remove_columns(
             ['goal', 'proof'])
+
+        # only allow examples that fully fit in the block size
+        def filter(example):
+            return example['input_ids'] is not None and sum(example['attention_mask']) < block_size
+
+        tokenized_dataset = tokenized_dataset.filter(filter, num_proc=num_proc)
+
+
     else:
         tokenized_dataset = tokenized_dataset.remove_columns(
             'text')
