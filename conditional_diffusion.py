@@ -21,6 +21,8 @@ class CONDITIONAL_DUO(DUO):
     def __init__(self, config, tokenizer):
         super().__init__(config, tokenizer)
 
+        self.tmp_val_batches = []
+
     def _loss(self, x0, valid_tokens,
               condition_cutoff,
               current_accumulation_step=None,
@@ -201,7 +203,11 @@ class CONDITIONAL_DUO(DUO):
         return losses.loss
 
     def validation_step(self, batch, batch_idx):
+        if batch_idx < self.config.sampling.num_sample_batches:
+            self.tmp_val_batches.append(batch)
+
         del batch_idx
+
         losses = self._loss(batch['input_ids'],
                             batch['attention_mask'],
                             batch['condition_cutoff'],
@@ -218,10 +224,9 @@ class CONDITIONAL_DUO(DUO):
              or not self.trainer.sanity_checking)
                 and self.config.eval.generate_samples):
             samples, text_samples = None, None
-            for _ in range(
+            for i in range(
                     self.config.sampling.num_sample_batches):
-                samples = self.generate_samples(
-                    num_samples=self.config.loader.eval_batch_size)
+                samples = self.generate_samples(self.tmp_val_batches[i])
 
                 self.metrics.record_entropy(samples)
                 # Decode the samples to be re-tokenized by eval model
@@ -250,46 +255,62 @@ class CONDITIONAL_DUO(DUO):
                              on_epoch=True,
                              on_step=False,
                              sync_dist=True)
+            self.tmp_val_batches = []
         self._train_mode()
 
-    # todo need conditions here to generate samples for (store random subset of validation conditions in internal variable?)
     @torch.no_grad()
     def generate_samples(self, sample_conditions, num_steps=None,
                          eps=1e-5):
         """Generate samples from the model."""
 
-        num_samples = sample_conditions.shape[0]
+
+        # assume num_tokens >= max seq len. Then we can just generate noise for whole vector, and set the conditioned tokens where needed
+        # given a batch with input_ids, condition_cutoff, attention_mask
+        condition_mask = torch.arange(sample_conditions['input_ids'].shape[1], device=sample_conditions['input_ids'].device).unsqueeze(0) < sample_conditions['condition_cutoff'].unsqueeze(1)
+
+        num_samples = sample_conditions['input_ids'].shape[0]
 
         # Lightning auto-casting is not working in this method for some reason
         if num_steps is None:
             num_steps = self.config.sampling.steps
+        # uniform random over vocab
         x = self.prior_sample(num_samples, self.num_tokens)
+
         timesteps = torch.linspace(
             1, eps, num_steps + 1, device=self.device)
         dt = (1 - eps) / num_steps
         p_x0_cache = None
 
-        # todo give ancestral update the conditions
         for i in range(num_steps):
+            # reset x for each step
+            x = torch.where(condition_mask, sample_conditions['input_ids'], x)
+
             t = timesteps[i] * torch.ones(
                 x.shape[0], 1, device=self.device)
+
             if self.sampler == 'ancestral':
                 _, x = self._ancestral_update(
                     x=x, t=t, dt=dt, p_x0=None)
+
             elif self.sampler == 'ancestral_cache':
+
                 p_x0_cache, x_next = self._ancestral_update(
                     x=x, t=t, dt=dt, p_x0=p_x0_cache)
+
                 if (not torch.allclose(x_next, x)
                         or self.time_conditioning):
                     # Disable caching
                     p_x0_cache = None
                 x = x_next
+
             else:
                 x = self._analytic_update(x=x, t=t, dt=dt)
 
         t0 = timesteps[-1] * torch.ones(x.shape[0], 1,
                                         device=self.device)
         if self.config.sampling.noise_removal == 'ancestral':
+            x = torch.where(condition_mask, sample_conditions['input_ids'], x)
+
             # not implemented (or valid?) for uniform state
             if self.sampler == 'analytic':
                 x = self._denoiser_update(x=x, t=t0)
@@ -298,8 +319,12 @@ class CONDITIONAL_DUO(DUO):
                                               p_x0=p_x0_cache,
                                               noise_removal_step=True)
         elif self.config.sampling.noise_removal == 'greedy':
+            x = torch.where(condition_mask, sample_conditions['input_ids'], x)
+
             sigma = self._sigma_from_alphat(self.noise(t0)[1])
             x = self.forward(xt=x, sigma=sigma).argmax(dim=-1)
+
+        x = torch.where(condition_mask, sample_conditions['input_ids'], x)
         return x
 
     def _ancestral_update(self, x, t, dt, p_x0=None,
@@ -313,12 +338,12 @@ class CONDITIONAL_DUO(DUO):
         sigma_t = self._sigma_from_alphat(alpha_t)
         assert alpha_t.ndim == 2
 
-        # todo x here is without conditions, add the conditions to the forward x with
         q_xs = self._compute_posterior(
             x=self.forward(x, sigma_t).exp(),
             xt=x,
             alpha_s=alpha_s,
             alpha_t=alpha_t)
+
         if self.p_nucleus < 1:
             q_xs = utils.top_k_top_p_filtering(
                 q_xs.log(), top_p=self.p_nucleus)

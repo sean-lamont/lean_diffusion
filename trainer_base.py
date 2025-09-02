@@ -87,7 +87,8 @@ class TrainerBase(L.LightningModule):
             #     config.eval.checkpoint_path, trust_remote_code=True)
             # todo fine tune model to use sigma (e.g. for LayerNorm adaptation based on sigma, as done in DiT adaLN)
             backbone = transformers.AutoModelForMaskedLM.from_pretrained(
-                pretrained_model_name_or_path='answerdotai/ModernBERT-base', attn_implementation='flash_attention_2',
+                # pretrained_model_name_or_path='answerdotai/ModernBERT-base-large', attn_implementation='flash_attention_2',
+                pretrained_model_name_or_path='answerdotai/ModernBERT-large', attn_implementation='flash_attention_2',
                 torch_dtype=torch.float16)
 
             class BertBackbone(torch.nn.Module):
