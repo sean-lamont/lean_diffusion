@@ -596,7 +596,7 @@ def get_dataset(dataset_name,
 
             # cat the tokens, keeping the length recorded
             # tokens = {'input_ids': [[BOS]] + goal_tokens['input_ids'] + proof_tokens['input_ids'] + [[EOS]]}#, 'condition_cutoff': [len(goal_tokens['input_ids']) + 1]} # add 1 for BOS
-            tokens = {'input_ids': [[BOS] + goal_tokens['input_ids'][i] + proof_tokens['input_ids'][i] + [EOS] for i in
+            tokens = {'input_ids': [[BOS] + goal_tokens['input_ids'][i] + proof_tokens['input_ids'][i] + [EOS] + [PAD] * 2 for i in # add 2 pad to teach model to stop generating
                                     range(len(goal_tokens['input_ids']))],
                       # if len(goal_tokens['input_ids'][i]) + len(proof_tokens['input_ids'][i]) + 2 <= block_size], # ensure the whole goal fits in the block
 
@@ -721,7 +721,7 @@ def get_tokenizer(config):
         tokenizer = SyntheticTokenizer(vocab_size=256)
     else:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
-            config.data.tokenizer_name_or_path)
+            config.data.tokenizer_name_or_path, trust_remote_code=True)
 
     if (isinstance(tokenizer, transformers.GPT2TokenizerFast)
             or isinstance(tokenizer, transformers.GPT2Tokenizer)):

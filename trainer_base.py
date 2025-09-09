@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import transformers
+from transformers import BitsAndBytesConfig
 
 import dataloader
 import metrics
@@ -81,7 +82,66 @@ class TrainerBase(L.LightningModule):
         elif self.config.algo.backbone == 'hf_dit':
             self.backbone = transformers.AutoModelForMaskedLM.from_pretrained(
                 config.eval.checkpoint_path, trust_remote_code=True)
-        # todo conditional backbone
+        #
+        elif self.config.algo.backbone == 'diffucoder':
+
+            backbone = transformers.AutoModel.from_pretrained(
+                pretrained_model_name_or_path="apple/DiffuCoder-7B-cpGRPO", trust_remote_code=True, torch_dtype=torch.float16, attn_implementation='flash_attention_2',
+                quantization_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type='nf4', bnb_4bit_compute_type=torch.float16)
+            )
+
+
+
+            # todo redo integral with backbone token shape rather than tokenizer vocab size? (slightly different sizes)
+            class DiffuCoderBackbone(torch.nn.Module):
+                def __init__(self, backbone):
+                    super().__init__()
+                    self.backbone = backbone
+
+                    # hack to allow for soft token embeddings, without modifying the original library
+
+                    def new_forward_1(input_ids, inputs_embeds=None):
+                        if inputs_embeds is not None:
+                            raise NotImplementedError
+                        # (batch_size, seq_len, vocab_size) or (batch_size, seq_len)
+                        if input_ids.ndim == 2:
+                            one_hot = torch.zeros(input_ids.shape[0], input_ids.shape[1],
+                                                  backbone.model.embed_tokens.weight.shape[0]).to(self.backbone.model.embed_tokens.weight.device)
+                            one_hot.scatter_(2, input_ids.unsqueeze(-1), 1)
+
+                            return one_hot.float() @ self.backbone.model.embed_tokens.weight.float()
+                        else:
+                            assert input_ids.ndim == 3
+                            return torch.nn.functional.softmax(input_ids,
+                                                               dim=-1).float() @ self.backbone.model.embed_tokens.weight.float()
+
+                    self.backbone.model.embed_tokens.forward = new_forward_1
+
+                def forward(self, input_ids, sigma=None, attention_mask=None):
+                    return self.backbone(input_ids=input_ids, attention_mask=attention_mask.float() if attention_mask is not None else None).logits
+
+
+            self.vocab_size = backbone.model.embed_tokens.weight.shape[0]
+            self.backbone = DiffuCoderBackbone(backbone)
+
+
+            # wrap as a LoRA model with hardcoded values for now
+            import peft
+            from peft import LoraConfig, get_peft_model, TaskType
+            lora_config = LoraConfig(
+                r=8,
+                lora_alpha=16,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                "up_proj", "down_proj", "fc1", "fc2"],
+                # task_type=TaskType.,
+                inference_mode=False,
+            )
+            self.backbone = get_peft_model(self.backbone, lora_config)
+            print(f'Number of trainable parameters in LoRA model: {sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)}')
+
+
+
+
         elif self.config.algo.backbone == 'bert':
             # self.backbone = transformers.AutoModelForMaskedLM.from_pretrained(
             #     config.eval.checkpoint_path, trust_remote_code=True)
