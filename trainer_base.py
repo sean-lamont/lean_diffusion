@@ -86,11 +86,11 @@ class TrainerBase(L.LightningModule):
         elif self.config.algo.backbone == 'diffucoder':
 
             backbone = transformers.AutoModel.from_pretrained(
-                pretrained_model_name_or_path="apple/DiffuCoder-7B-cpGRPO", trust_remote_code=True, torch_dtype=torch.float16, attn_implementation='flash_attention_2',
-                quantization_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type='nf4', bnb_4bit_compute_type=torch.float16)
+                pretrained_model_name_or_path="apple/DiffuCoder-7B-cpGRPO", trust_remote_code=True,
+                torch_dtype=torch.float16, attn_implementation='flash_attention_2',
+                quantization_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type='nf4',
+                                                       bnb_4bit_compute_type=torch.float16)
             )
-
-
 
             # todo redo integral with backbone token shape rather than tokenizer vocab size? (slightly different sizes)
             class DiffuCoderBackbone(torch.nn.Module):
@@ -106,8 +106,11 @@ class TrainerBase(L.LightningModule):
                         # (batch_size, seq_len, vocab_size) or (batch_size, seq_len)
                         if input_ids.ndim == 2:
                             one_hot = torch.zeros(input_ids.shape[0], input_ids.shape[1],
-                                                  backbone.model.embed_tokens.weight.shape[0]).to(self.backbone.model.embed_tokens.weight.device)
+                                                  backbone.model.embed_tokens.weight.shape[0]).to(
+                                self.backbone.model.embed_tokens.weight.device)
                             one_hot.scatter_(2, input_ids.unsqueeze(-1), 1)
+
+                            # print(one_hot.shape, self.backbone.model.embed_tokens.weight.shape)
 
                             return one_hot.float() @ self.backbone.model.embed_tokens.weight.float()
                         else:
@@ -118,12 +121,16 @@ class TrainerBase(L.LightningModule):
                     self.backbone.model.embed_tokens.forward = new_forward_1
 
                 def forward(self, input_ids, sigma=None, attention_mask=None):
-                    return self.backbone(input_ids=input_ids, attention_mask=attention_mask.float() if attention_mask is not None else None).logits
+                    # return self.backbone(input_ids=input_ids, attention_mask=None).logits
+                    # print(attention_mask.shape, input_ids.shape)
+                    # todo issue with attention mask for batch size > 1
+                    #  RuntimeError: The expanded size of the tensor (512) must match the existing size (2) at non-singleton dimension 2.  Target sizes: [2, 28, 512, 512].
 
+                    return self.backbone(input_ids=input_ids,
+                                         attention_mask=attention_mask.float() if attention_mask is not None else None).logits
 
             self.vocab_size = backbone.model.embed_tokens.weight.shape[0]
             self.backbone = DiffuCoderBackbone(backbone)
-
 
             # wrap as a LoRA model with hardcoded values for now
             import peft
@@ -137,7 +144,8 @@ class TrainerBase(L.LightningModule):
                 inference_mode=False,
             )
             self.backbone = get_peft_model(self.backbone, lora_config)
-            print(f'Number of trainable parameters in LoRA model: {sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)}')
+            print(
+                f'Number of trainable parameters in LoRA model: {sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)}')
 
 
 
@@ -621,7 +629,9 @@ class Diffusion(TrainerBase):
         # Lightning auto-casting is not working in this method for some reason
         if num_steps is None:
             num_steps = self.config.sampling.steps
+
         x = self.prior_sample(num_samples, self.num_tokens)
+
         timesteps = torch.linspace(
             1, eps, num_steps + 1, device=self.device)
         dt = (1 - eps) / num_steps

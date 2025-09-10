@@ -255,7 +255,7 @@ class CONDITIONAL_DUO(DUO):
 
                         self.trainer.logger.log_table(
                             key=f'samples@global_step{self.global_step}',
-                            columns=['Generated Samples'],
+                            columns=['Generated Samples', 'Ground Truth'],
                             data=[[s, ground_truth[i]] for i, s in enumerate(text_samples)])
 
                     if self.config.eval.compute_generative_perplexity:
@@ -278,7 +278,7 @@ class CONDITIONAL_DUO(DUO):
 
     @torch.no_grad()
     def generate_samples(self, sample_conditions, num_steps=None,
-                         eps=1e-5):
+                         eps=1e-5, proof_len=50):
         """Generate samples from the model."""
 
 
@@ -302,6 +302,11 @@ class CONDITIONAL_DUO(DUO):
         for i in range(num_steps):
             # reset x for each step
             x = torch.where(condition_mask, sample_conditions['input_ids'], x)
+
+            proof_len_mask = torch.arange(sample_conditions['input_ids'].shape[1],
+                                          device=sample_conditions['input_ids'].device).unsqueeze(0) > (sample_conditions['condition_cutoff'].unsqueeze(1) + proof_len)
+
+            x = torch.where(proof_len_mask, self.tokenizer.eos_token_id, x)
 
             t = timesteps[i] * torch.ones(
                 x.shape[0], 1, device=self.device)
