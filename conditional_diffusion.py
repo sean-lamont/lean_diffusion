@@ -1,3 +1,5 @@
+import random
+
 import torch
 import torch.nn.functional as F
 
@@ -203,8 +205,14 @@ class CONDITIONAL_DUO(DUO):
         return losses.loss
 
     def validation_step(self, batch, batch_idx):
-        if batch_idx < self.config.sampling.num_sample_batches:
-            self.tmp_val_batches.append(batch)
+        # randomly choose batch to store
+        if len(self.tmp_val_batches) < self.config.sampling.num_sample_batches:
+            if random.random() < 0.1:
+                self.tmp_val_batches.append(batch)
+
+
+        # if batch_idx < self.config.sampling.num_sample_batches:
+        #     self.tmp_val_batches.append(batch)
 
         del batch_idx
 
@@ -224,37 +232,47 @@ class CONDITIONAL_DUO(DUO):
              or not self.trainer.sanity_checking)
                 and self.config.eval.generate_samples):
             samples, text_samples = None, None
-            for i in range(
-                    self.config.sampling.num_sample_batches):
-                samples = self.generate_samples(self.tmp_val_batches[i])
+            try:
+                for i in range(
+                        self.config.sampling.num_sample_batches):
+                    samples = self.generate_samples(self.tmp_val_batches[i])
 
-                self.metrics.record_entropy(samples)
-                # Decode the samples to be re-tokenized by eval model
-                text_samples = self.tokenizer.batch_decode(samples)
-                if self.config.eval.compute_generative_perplexity:
-                    self.metrics.record_generative_perplexity(
-                        text_samples, self.num_tokens, self.device)
-            if text_samples is not None:
-                if self.trainer.global_rank == 0 and hasattr(
-                        self.trainer.logger, 'log_table'):
-                    # Log the last generated samples
-                    text_samples = text_samples[
-                        : self.config.sampling.num_sample_log]
-                    self.trainer.logger.log_table(
-                        key=f'samples@global_step{self.global_step}',
-                        columns=['Generated Samples'],
-                        data=[[s] for s in text_samples])
-                if self.config.eval.compute_generative_perplexity:
-                    self.log('val/gen_ppl',
-                             self.metrics.gen_ppl.compute(),
-                             on_epoch=True,
-                             on_step=False,
-                             sync_dist=True)
-                    self.log('val/sample_entropy',
-                             self.metrics.sample_entropy.compute(),
-                             on_epoch=True,
-                             on_step=False,
-                             sync_dist=True)
+                    self.metrics.record_entropy(samples)
+                    # Decode the samples to be re-tokenized by eval model
+
+                    text_samples = self.tokenizer.batch_decode(samples)
+                    if self.config.eval.compute_generative_perplexity:
+                        self.metrics.record_generative_perplexity(
+                            text_samples, self.num_tokens, self.device)
+                    ground_truth = self.tokenizer.batch_decode(
+                        self.tmp_val_batches[i]['input_ids'])
+                if text_samples is not None:
+                    if self.trainer.global_rank == 0 and hasattr(
+                            self.trainer.logger, 'log_table'):
+                        # Log the last generated samples
+                        text_samples = text_samples[
+                            : self.config.sampling.num_sample_log]
+
+                        self.trainer.logger.log_table(
+                            key=f'samples@global_step{self.global_step}',
+                            columns=['Generated Samples'],
+                            data=[[s, ground_truth[i]] for i, s in enumerate(text_samples)])
+
+                    if self.config.eval.compute_generative_perplexity:
+                        self.log('val/gen_ppl',
+                                 self.metrics.gen_ppl.compute(),
+                                 on_epoch=True,
+                                 on_step=False,
+                                 sync_dist=True)
+                        self.log('val/sample_entropy',
+                                 self.metrics.sample_entropy.compute(),
+                                 on_epoch=True,
+                                 on_step=False,
+                                 sync_dist=True)
+
+            except Exception as e:
+                print(f'Error generating samples: {e}')
+
             self.tmp_val_batches = []
         self._train_mode()
 
