@@ -444,14 +444,8 @@ def get_dataset(dataset_name,
 
     if dataset_name == 'leandojo':
         dataset = datasets.load_from_disk(
-            '/home/sean/lean_diffusion/leandojo_hf', )
-        # cache_dir=cache_dir,
-        # streaming=streaming,
-        # revision=revision)
-        # print (os.getcwd())
-        # dataset = datasets.Dataset.from_file('./leandojo_hf/data-00000-of-00001.arrow')
-
-
+            'leandojo', ) # replace with local directory
+    # '/home/sean/lean_diffusion/leandojo_hf', )
 
     elif dataset_name == 'wikitext103':
         dataset = datasets.load_dataset(
@@ -595,13 +589,13 @@ def get_dataset(dataset_name,
                                      return_token_type_ids=False)
 
             # cat the tokens, keeping the length record
-            # tokens = {'input_ids': [[BOS]] + goal_tokens['input_ids'] + proof_tokens['input_ids'] + [[EOS]]}#, 'condition_cutoff': [len(goal_tokens['input_ids']) + 1]} # add 1 for BOS
-            tokens = {'input_ids': [goal_tokens['input_ids'][i] + [BOS] + proof_tokens['input_ids'][i] + [EOS] * 10 for i in # add 2 pad to teach model to stop generating
-                                    range(len(goal_tokens['input_ids']))],
-                      # if len(goal_tokens['input_ids'][i]) + len(proof_tokens['input_ids'][i]) + 2 <= block_size], # ensure the whole goal fits in the block
+            tokens = {
+                'input_ids': [goal_tokens['input_ids'][i] + [BOS] + proof_tokens['input_ids'][i] + [EOS] * 10 for i in
+                              # adding extra EOS to teach model to stop generating
+                              range(len(goal_tokens['input_ids']))],
 
-                      'condition_cutoff': [len(goal_tokens['input_ids'][i]) + 1 for i in
-                                           range(len(goal_tokens['input_ids']))]}  # add 1 for BOS
+                'condition_cutoff': [len(goal_tokens['input_ids'][i]) + 1 for i in
+                                     range(len(goal_tokens['input_ids']))]}  # add 1 for BOS
 
             # add attention mask
             tokens['attention_mask'] = [
@@ -612,9 +606,6 @@ def get_dataset(dataset_name,
             tokens['input_ids'] = [
                 tok + [PAD] * (block_size - len(tok)) if len(tok) < block_size else tok[:block_size - 1] + [EOS] for tok
                 in tokens['input_ids']]
-
-            # sanity check
-            # print (tokens['input_ids'][:10], tokens['condition_cutoff'][:10], tokenizer.batch_decode(tokens['input_ids'][:10]), tokenizer.batch_decode([tok[tokens['condition_cutoff'][i]:] for i, tok in enumerate(tokens['input_ids'][:10])]))
 
             return tokens
 

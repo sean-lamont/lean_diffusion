@@ -1,12 +1,7 @@
 import random
 
-import torch
-import torch.nn.functional as F
-
-import trainer_base
-from trainer_base import Loss
-import utils
 from algo import *
+from trainer_base import Loss
 
 # - trainer_base -> diffusion -> Uniform state diffusion -> Duo base -> Duo -> Conditional Duo
 # _loss -> nll (implemented by duo)
@@ -34,8 +29,6 @@ class CONDITIONAL_DUO(DUO):
          valid_tokens) = self._process_model_input(
             x0, valid_tokens)
 
-
-        # todo could just pass condition mask and valid tokens from dataloader?
         # update valid tokens to include 0's at condition indices
         batch_size, seq_len = x0.shape
         device = x0.device
@@ -45,16 +38,7 @@ class CONDITIONAL_DUO(DUO):
         loss = self.nll(input_tokens, output_tokens, condition_mask, valid_tokens,
                         current_accumulation_step, train_mode)
 
-        # negate condition mask, and join with valid (i.e. valid must be not padding and not condition)
-        # valid_tokens = valid_tokens * (~condition_mask).long()
-
-        # print (f'before: {valid_tokens}')
-
         valid_tokens = torch.where(condition_mask, torch.tensor(0, dtype=valid_tokens.dtype, device=valid_tokens.device), valid_tokens)
-
-        # print (f'after: {valid_tokens}')
-        # print (torch.sum(valid_tokens, dim=1))
-
 
         assert loss.ndim == 2
         if self.ignore_bos:
@@ -163,15 +147,12 @@ class CONDITIONAL_DUO(DUO):
 
         xt_usdm = torch.where(condition_mask, x0, xt_usdm)
 
-        # todo is this expensive? better way to do this?
         one_hot_condition_mask = condition_mask.unsqueeze(-1).expand(-1, -1, xt.shape[-1])
-
 
         xt = torch.where(one_hot_condition_mask, x0_one_hot, xt)
 
         # note model has to support forward with different shapes / modes for soft vs hard tokens
         # given input_embeds as this is the 'curriculum learning' version where we pass in soft tokens (for non-conditional)
-
 
         # from paper, assumes the model forward step will apply softmax to the soft tokens
         log_x_theta = self.forward(xt, sigma=sigma, attention_mask=attention_mask, )
@@ -189,7 +170,6 @@ class CONDITIONAL_DUO(DUO):
     def training_step(self, batch, batch_idx):
         current_accumulation_step = (
                 batch_idx % self.trainer.accumulate_grad_batches)
-        # todo break input_ids into condition and input
         losses = self._loss(batch['input_ids'],
                             batch['attention_mask'],
                             batch['condition_cutoff'],
@@ -209,10 +189,6 @@ class CONDITIONAL_DUO(DUO):
         if len(self.tmp_val_batches) < self.config.sampling.num_sample_batches:
             if random.random() < 0.1:
                 self.tmp_val_batches.append(batch)
-
-
-        # if batch_idx < self.config.sampling.num_sample_batches:
-        #     self.tmp_val_batches.append(batch)
 
         del batch_idx
 

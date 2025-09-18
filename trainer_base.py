@@ -100,7 +100,7 @@ class TrainerBase(L.LightningModule):
 
                     # hack to allow for soft token embeddings, without modifying the original library
 
-                    def new_forward_1(input_ids, inputs_embeds=None):
+                    def new_forward(input_ids, inputs_embeds=None):
                         if inputs_embeds is not None:
                             raise NotImplementedError
                         # (batch_size, seq_len, vocab_size) or (batch_size, seq_len)
@@ -118,13 +118,10 @@ class TrainerBase(L.LightningModule):
                             return torch.nn.functional.softmax(input_ids,
                                                                dim=-1).float() @ self.backbone.model.embed_tokens.weight.float()
 
-                    self.backbone.model.embed_tokens.forward = new_forward_1
+                    self.backbone.model.embed_tokens.forward = new_forward
 
                 def forward(self, input_ids, sigma=None, attention_mask=None):
-                    # return self.backbone(input_ids=input_ids, attention_mask=None).logits
-                    # print(attention_mask.shape, input_ids.shape)
                     # todo issue with attention mask for batch size > 1
-                    #  RuntimeError: The expanded size of the tensor (512) must match the existing size (2) at non-singleton dimension 2.  Target sizes: [2, 28, 512, 512].
 
                     return self.backbone(input_ids=input_ids,
                                          attention_mask=attention_mask.float() if attention_mask is not None else None).logits
@@ -151,11 +148,7 @@ class TrainerBase(L.LightningModule):
 
 
         elif self.config.algo.backbone == 'bert':
-            # self.backbone = transformers.AutoModelForMaskedLM.from_pretrained(
-            #     config.eval.checkpoint_path, trust_remote_code=True)
-            # todo fine tune model to use sigma (e.g. for LayerNorm adaptation based on sigma, as done in DiT adaLN)
             backbone = transformers.AutoModelForMaskedLM.from_pretrained(
-                # pretrained_model_name_or_path='answerdotai/ModernBERT-base-large', attn_implementation='flash_attention_2',
                 pretrained_model_name_or_path='answerdotai/ModernBERT-large', attn_implementation='flash_attention_2',
                 torch_dtype=torch.float16)
 
